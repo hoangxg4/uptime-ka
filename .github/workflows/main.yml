@@ -2,7 +2,7 @@ name: Pro Keep Alive (Auto-Parallel)
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -22,7 +22,6 @@ jobs:
 
       - name: Process My Group
         env:
-          # Sử dụng quotes để đảm bảo không bị lỗi ký tự đặc biệt
           DISCORD_WEBHOOK: "${{ secrets.DISCORD_WEBHOOK_URL }}"
           RAW_LIST: "${{ vars.WEBSITES_LIST }}"
           CURRENT_INDEX: ${{ matrix.index }}
@@ -30,49 +29,41 @@ jobs:
           # 1. Làm sạch danh sách
           CLEAN_LIST=$(echo "$RAW_LIST" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
           readarray -t ALL_URLS <<< "$CLEAN_LIST"
-          
           TOTAL=${#ALL_URLS[@]}
           
           for (( i=$CURRENT_INDEX; i<$TOTAL; i+=5 )); do
             url="${ALL_URLS[$i]}"
-            
             SLEEP_TIME=$(( RANDOM % 111 + 10 ))
             echo "--- Matrix $CURRENT_INDEX: Đợi $SLEEP_TIME giây cho $url ---"
             sleep $SLEEP_TIME
             
             echo "🚀 Đang đánh thức: $url"
             
-            # CHỈNH SỬA: Thêm || true để không làm dừng script khi agent-browser báo lỗi (như 404)
-            # Chúng ta sẽ kiểm tra thủ công kết quả
             RESULT=$(agent-browser open "$url" --timeout 30000 2>&1) || true
-            echo "$RESULT"
-
-            # CHỈNH SỬA LOGIC KIỂM TRA:
-            # Nếu gặp lỗi HTTP (như 404) nhưng vẫn kết nối được thì coi như vẫn sống (Keep-alive thành công)
-            # Chỉ báo sập nếu là lỗi DNS, Timeout nặng hoặc từ chối kết nối hoàn toàn.
-            if [[ "$RESULT" == *"ERR_NAME_NOT_RESOLVED"* || "$RESULT" == *"ERR_CONNECTION_REFUSED"* || "$RESULT" == *"Timeout"* ]]; then
-              echo "❌ $url sập thật sự!"
-              
-              # Gửi Discord dùng định dạng an toàn hơn để tránh lỗi 'Malformed input'
-              curl -H "Content-Type: application/json" \
-                   -X POST \
-                   -d @- "$DISCORD_WEBHOOK" <<EOF
-              {
-                "embeds": [{
-                  "title": "🚨 CẢNH BÁO WEBSITE DOWN",
-                  "color": 15158528,
-                  "fields": [
-                    {"name": "Địa chỉ", "value": "$url", "inline": false},
-                    {"name": "Lỗi", "value": "Không thể truy cập hệ thống", "inline": true},
-                    {"name": "Thời gian", "value": "$(date '+%H:%M:%S %d/%m/%Y') UTC", "inline": true}
-                  ],
-                  "footer": {"text": "Matrix: $CURRENT_INDEX"}
-                }]
-              }
-EOF
-            else
-              echo "✅ $url Online (Hoặc trả về mã lỗi có chủ đích)."
-            fi
             
+            if [[ "$RESULT" == *"ERR_NAME_NOT_RESOLVED"* || "$RESULT" == *"ERR_CONNECTION_REFUSED"* || "$RESULT" == *"Timeout"* ]]; then
+              echo "❌ $url sập!"
+              
+              # TẠO JSON BẰNG BIẾN ĐỂ TRÁNH LỖI YAML INDENT
+              PAYLOAD=$(cat <<JSON
+          {
+            "embeds": [{
+              "title": "🚨 CẢNH BÁO WEBSITE DOWN",
+              "color": 15158528,
+              "fields": [
+                {"name": "Địa chỉ", "value": "$url", "inline": false},
+                {"name": "Trạng thái", "value": "Không phản hồi", "inline": true},
+                {"name": "Thời gian", "value": "$(date '+%H:%M:%S %d/%m/%Y') UTC", "inline": true}
+              ],
+              "footer": {"text": "Matrix: $CURRENT_INDEX"}
+            }]
+          }
+          JSON
+          )
+              # Gửi đến Discord
+              curl -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "$DISCORD_WEBHOOK"
+            else
+              echo "✅ $url Online."
+            fi
             agent-browser close || true
           done
