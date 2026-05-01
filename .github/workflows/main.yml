@@ -2,60 +2,46 @@ name: Pro Keep Alive (Auto-Parallel)
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix_config: ${{ steps.split.outputs.matrix }}
-    steps:
-      - id: split
-        run: |
-          # 1. Lấy danh sách từ Variable và làm sạch dữ liệu
-          RAW_LIST="${{ vars.WEBSITES_LIST }}"
-          CLEAN_LIST=$(echo $RAW_LIST | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
-          
-          # 2. Đưa vào file tạm
-          echo "$CLEAN_LIST" > urls.txt
-          TOTAL=$(wc -l < urls.txt)
-          echo "Tổng số website: $TOTAL"
-
-          # 3. Chia thành 5 nhóm (file)
-          split -n l/5 -d urls.txt group_ --additional-suffix=.txt || true
-
-          # 4. Gom các nhóm thành mảng JSON cho Matrix
-          # Nếu ít hơn 5 web, split sẽ tạo ít file hơn, jq vẫn xử lý tốt.
-          JSON_MATRIX=$(printf '%s\n' group_*.txt | jq -R . | jq -s -c .)
-          echo "matrix=$JSON_MATRIX" >> $GITHUB_OUTPUT
-
   ping:
-    needs: prepare
     runs-on: ubuntu-latest
     strategy:
+      # Chúng ta tạo 5 matrix cố định từ 0 đến 4
       matrix:
-        group_file: ${{ fromJson(needs.prepare.outputs.matrix_config) }}
+        index: [0, 1, 2, 3, 4]
       fail-fast: false
       max-parallel: 5
     
     steps:
-      - uses: actions/checkout@v4 # Cần để đọc các file group_*.txt được tạo
-
       - name: Install agent-browser
         run: |
           npm install -g agent-browser
           agent-browser install --with-deps
 
-      - name: Process Group
+      - name: Process My Group
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          RAW_LIST: ${{ vars.WEBSITES_LIST }}
+          CURRENT_INDEX: ${{ matrix.index }}
         run: |
-          # Đọc các URL từ file nhóm được phân bổ
-          while IFS= read -r url; do
-            # Random sleep 10-120s cho mỗi web để "tàng hình"
+          # 1. Làm sạch danh sách và đưa vào mảng
+          CLEAN_LIST=$(echo "$RAW_LIST" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
+          readarray -t ALL_URLS <<< "$CLEAN_LIST"
+          
+          TOTAL=${#ALL_URLS[@]}
+          echo "Tổng số website: $TOTAL"
+
+          # 2. Thuật toán chia: Mỗi matrix chỉ xử lý các phần tử có (vị trí % 5 == CURRENT_INDEX)
+          # Cách này giúp chia đều web cho 5 luồng mà không cần tạo file tạm
+          for (( i=$CURRENT_INDEX; i<$TOTAL; i+=5 )); do
+            url="${ALL_URLS[$i]}"
+            
+            # Random sleep 10-120s cho mỗi web
             SLEEP_TIME=$(( RANDOM % 111 + 10 ))
-            echo "--- Đợi $SLEEP_TIME giây cho $url ---"
+            echo "--- Matrix $CURRENT_INDEX: Đợi $SLEEP_TIME giây cho $url ---"
             sleep $SLEEP_TIME
             
             echo "🚀 Đang đánh thức: $url"
@@ -63,7 +49,6 @@ jobs:
             if ! agent-browser open "$url" --timeout 30000; then
               echo "❌ $url sập!"
               
-              # Thông báo Discord xịn xò hơn
               JSON_PAYLOAD=$(cat <<EOF
               {
                 "embeds": [{
@@ -74,15 +59,14 @@ jobs:
                     {"name": "Trạng thái", "value": "Không phản hồi (Timeout)", "inline": true},
                     {"name": "Thời gian", "value": "$(date '+%H:%M:%S %d/%m/%Y') UTC", "inline": true}
                   ],
-                  "footer": {"text": "GitHub Actions Monitor"}
+                  "footer": {"text": "Matrix: $CURRENT_INDEX | GitHub Actions Monitor"}
                 }]
               }
           EOF
               )
-              curl -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" $DISCORD_WEBHOOK
+              curl -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$DISCORD_WEBHOOK"
             else
               echo "✅ $url Online."
             fi
             agent-browser close || true
-            
-          done < "${{ matrix.group_file }}"
+          done
