@@ -1,51 +1,88 @@
-name: Keep Alive Bot
+name: Pro Keep Alive (Auto-Parallel)
 
 on:
   schedule:
-    - cron: "*/10 * * * *" # 10 phút chạy 1 lần là vừa đẹp, không quá dày
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
-  ping:
+  prepare:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    outputs:
+      matrix_config: ${{ steps.split.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - id: split
+        run: |
+          # 1. Lấy danh sách từ Variable và làm sạch dữ liệu
+          RAW_LIST="${{ vars.WEBSITES_LIST }}"
+          CLEAN_LIST=$(echo $RAW_LIST | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
+          
+          # 2. Đưa vào file tạm
+          echo "$CLEAN_LIST" > urls.txt
+          TOTAL=$(wc -l < urls.txt)
+          echo "Tổng số website: $TOTAL"
+
+          # 3. Chia thành 5 nhóm (file)
+          split -n l/5 -d urls.txt group_ --additional-suffix=.txt || true
+
+          # 4. Gom các nhóm thành mảng JSON cho Matrix
+          # Nếu ít hơn 5 web, split sẽ tạo ít file hơn, jq vẫn xử lý tốt.
+          JSON_MATRIX=$(printf '%s\n' group_*.txt | jq -R . | jq -s -c .)
+          echo "matrix=$JSON_MATRIX" >> $GITHUB_OUTPUT
+
+  ping:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        group_file: ${{ fromJson(needs.prepare.outputs.matrix_config) }}
+      fail-fast: false
+      max-parallel: 5
+    
+    steps:
+      - uses: actions/checkout@v4 # Cần để đọc các file group_*.txt được tạo
 
       - name: Install agent-browser
         run: |
           npm install -g agent-browser
           agent-browser install --with-deps
 
-      - name: Wake up websites
+      - name: Process Group
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          IFS=',' read -ra ADDR <<< "${{ vars.WEBSITES_LIST }}"
-          
-          # Tạo header cho trang Status đơn giản
-          echo "<html><body style='font-family:sans-serif;line-height:1.6;max-width:600px;margin:auto;padding:20px;'>" > index.html
-          echo "<h2>⚡ Keep-Alive Status</h2>" >> index.html
-          echo "<p>Last Heartbeat: <b>$(date '+%Y-%m-%d %H:%M:%S') (UTC)</b></p><hr>" >> index.html
-          echo "<ul style='list-style:none;padding:0;'>" >> index.html
-
-          for url in "${ADDR[@]}"; do
-            url=$(echo $url | xargs)
-            echo "Checking $url..."
+          # Đọc các URL từ file nhóm được phân bổ
+          while IFS= read -r url; do
+            # Random sleep 10-120s cho mỗi web để "tàng hình"
+            SLEEP_TIME=$(( RANDOM % 111 + 10 ))
+            echo "--- Đợi $SLEEP_TIME giây cho $url ---"
+            sleep $SLEEP_TIME
             
-            # Chỉ cần mở trang và đợi 5s để script/app kịp khởi động là đủ keep-alive
-            if agent-browser open $url --timeout 15000; then
-              echo "<li style='color:green;margin-bottom:10px;'>✅ <b>Online:</b> $url</li>" >> index.html
+            echo "🚀 Đang đánh thức: $url"
+            
+            if ! agent-browser open "$url" --timeout 30000; then
+              echo "❌ $url sập!"
+              
+              # Thông báo Discord xịn xò hơn
+              JSON_PAYLOAD=$(cat <<EOF
+              {
+                "embeds": [{
+                  "title": "🚨 CẢNH BÁO WEBSITE DOWN",
+                  "color": 15158528,
+                  "fields": [
+                    {"name": "Địa chỉ", "value": "$url", "inline": false},
+                    {"name": "Trạng thái", "value": "Không phản hồi (Timeout)", "inline": true},
+                    {"name": "Thời gian", "value": "$(date '+%H:%M:%S %d/%m/%Y') UTC", "inline": true}
+                  ],
+                  "footer": {"text": "GitHub Actions Monitor"}
+                }]
+              }
+          EOF
+              )
+              curl -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" $DISCORD_WEBHOOK
             else
-              echo "<li style='color:red;margin-bottom:10px;'>❌ <b>Timeout/Down:</b> $url</li>" >> index.html
+              echo "✅ $url Online."
             fi
             agent-browser close || true
-          done
-
-          echo "</ul><p><small>Powered by GitHub Actions</small></p></body></html>" >> index.html
-
-      - name: Update Status Page
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: .
-          publish_branch: gh-pages
+            
+          done < "${{ matrix.group_file }}"
