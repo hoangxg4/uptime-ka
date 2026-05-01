@@ -1,0 +1,51 @@
+name: Keep Alive Bot
+
+on:
+  schedule:
+    - cron: "*/10 * * * *" # 10 phút chạy 1 lần là vừa đẹp, không quá dày
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install agent-browser
+        run: |
+          npm install -g agent-browser
+          agent-browser install --with-deps
+
+      - name: Wake up websites
+        run: |
+          IFS=',' read -ra ADDR <<< "${{ vars.WEBSITES_LIST }}"
+          
+          # Tạo header cho trang Status đơn giản
+          echo "<html><body style='font-family:sans-serif;line-height:1.6;max-width:600px;margin:auto;padding:20px;'>" > index.html
+          echo "<h2>⚡ Keep-Alive Status</h2>" >> index.html
+          echo "<p>Last Heartbeat: <b>$(date '+%Y-%m-%d %H:%M:%S') (UTC)</b></p><hr>" >> index.html
+          echo "<ul style='list-style:none;padding:0;'>" >> index.html
+
+          for url in "${ADDR[@]}"; do
+            url=$(echo $url | xargs)
+            echo "Checking $url..."
+            
+            # Chỉ cần mở trang và đợi 5s để script/app kịp khởi động là đủ keep-alive
+            if agent-browser open $url --timeout 15000; then
+              echo "<li style='color:green;margin-bottom:10px;'>✅ <b>Online:</b> $url</li>" >> index.html
+            else
+              echo "<li style='color:red;margin-bottom:10px;'>❌ <b>Timeout/Down:</b> $url</li>" >> index.html
+            fi
+            agent-browser close || true
+          done
+
+          echo "</ul><p><small>Powered by GitHub Actions</small></p></body></html>" >> index.html
+
+      - name: Update Status Page
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .
+          publish_branch: gh-pages
