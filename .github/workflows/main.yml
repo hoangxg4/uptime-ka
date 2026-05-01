@@ -1,4 +1,4 @@
-name: Pro Keep Alive (Auto-Parallel)
+name: Pro Keep Alive (Fast-Parallel)
 
 on:
   schedule:
@@ -20,50 +20,34 @@ jobs:
           npm install -g agent-browser
           agent-browser install --with-deps
 
-      - name: Process My Group
+      - name: Fast Wake Up
         env:
           DISCORD_WEBHOOK: "${{ secrets.DISCORD_WEBHOOK_URL }}"
           RAW_LIST: "${{ vars.WEBSITES_LIST }}"
           CURRENT_INDEX: ${{ matrix.index }}
         run: |
-          # 1. Làm sạch danh sách
+          # 1. Chuyển danh sách thành mảng
           CLEAN_LIST=$(echo "$RAW_LIST" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
           readarray -t ALL_URLS <<< "$CLEAN_LIST"
           TOTAL=${#ALL_URLS[@]}
           
+          # 2. Chạy thẳng luôn, không đợi chờ
           for (( i=$CURRENT_INDEX; i<$TOTAL; i+=5 )); do
             url="${ALL_URLS[$i]}"
-            SLEEP_TIME=$(( RANDOM % 111 + 10 ))
-            echo "--- Matrix $CURRENT_INDEX: Đợi $SLEEP_TIME giây cho $url ---"
-            sleep $SLEEP_TIME
-            
             echo "🚀 Đang đánh thức: $url"
             
-            RESULT=$(agent-browser open "$url" --timeout 30000 2>&1) || true
+            # Mở web, nếu lỗi thì bắt kết quả
+            RESULT=$(agent-browser open "$url" --timeout 25000 2>&1) || true
             
             if [[ "$RESULT" == *"ERR_NAME_NOT_RESOLVED"* || "$RESULT" == *"ERR_CONNECTION_REFUSED"* || "$RESULT" == *"Timeout"* ]]; then
               echo "❌ $url sập!"
               
-              # TẠO JSON BẰNG BIẾN ĐỂ TRÁNH LỖI YAML INDENT
-              PAYLOAD=$(cat <<JSON
-          {
-            "embeds": [{
-              "title": "🚨 CẢNH BÁO WEBSITE DOWN",
-              "color": 15158528,
-              "fields": [
-                {"name": "Địa chỉ", "value": "$url", "inline": false},
-                {"name": "Trạng thái", "value": "Không phản hồi", "inline": true},
-                {"name": "Thời gian", "value": "$(date '+%H:%M:%S %d/%m/%Y') UTC", "inline": true}
-              ],
-              "footer": {"text": "Matrix: $CURRENT_INDEX"}
-            }]
-          }
-          JSON
-          )
-              # Gửi đến Discord
-              curl -H "Content-Type: application/json" -X POST -d "$PAYLOAD" "$DISCORD_WEBHOOK"
+              # Gửi Discord gọn trong 1 dòng để không bao giờ lỗi YAML
+              MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO DOWN\",\"color\":15158528,\"description\":\"**URL:** $url\n**Matrix:** $CURRENT_INDEX\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
+              curl -s -H "Content-Type: application/json" -X POST -d "$MSG" "$DISCORD_WEBHOOK"
             else
               echo "✅ $url Online."
             fi
+            
             agent-browser close || true
           done
