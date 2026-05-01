@@ -9,7 +9,6 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     strategy:
-      # Chúng ta tạo 5 matrix cố định từ 0 đến 4
       matrix:
         index: [0, 1, 2, 3, 4]
       fail-fast: false
@@ -23,50 +22,57 @@ jobs:
 
       - name: Process My Group
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          RAW_LIST: ${{ vars.WEBSITES_LIST }}
+          # Sử dụng quotes để đảm bảo không bị lỗi ký tự đặc biệt
+          DISCORD_WEBHOOK: "${{ secrets.DISCORD_WEBHOOK_URL }}"
+          RAW_LIST: "${{ vars.WEBSITES_LIST }}"
           CURRENT_INDEX: ${{ matrix.index }}
         run: |
-          # 1. Làm sạch danh sách và đưa vào mảng
+          # 1. Làm sạch danh sách
           CLEAN_LIST=$(echo "$RAW_LIST" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
           readarray -t ALL_URLS <<< "$CLEAN_LIST"
           
           TOTAL=${#ALL_URLS[@]}
-          echo "Tổng số website: $TOTAL"
-
-          # 2. Thuật toán chia: Mỗi matrix chỉ xử lý các phần tử có (vị trí % 5 == CURRENT_INDEX)
-          # Cách này giúp chia đều web cho 5 luồng mà không cần tạo file tạm
+          
           for (( i=$CURRENT_INDEX; i<$TOTAL; i+=5 )); do
             url="${ALL_URLS[$i]}"
             
-            # Random sleep 10-120s cho mỗi web
             SLEEP_TIME=$(( RANDOM % 111 + 10 ))
             echo "--- Matrix $CURRENT_INDEX: Đợi $SLEEP_TIME giây cho $url ---"
             sleep $SLEEP_TIME
             
             echo "🚀 Đang đánh thức: $url"
             
-            if ! agent-browser open "$url" --timeout 30000; then
-              echo "❌ $url sập!"
+            # CHỈNH SỬA: Thêm || true để không làm dừng script khi agent-browser báo lỗi (như 404)
+            # Chúng ta sẽ kiểm tra thủ công kết quả
+            RESULT=$(agent-browser open "$url" --timeout 30000 2>&1) || true
+            echo "$RESULT"
+
+            # CHỈNH SỬA LOGIC KIỂM TRA:
+            # Nếu gặp lỗi HTTP (như 404) nhưng vẫn kết nối được thì coi như vẫn sống (Keep-alive thành công)
+            # Chỉ báo sập nếu là lỗi DNS, Timeout nặng hoặc từ chối kết nối hoàn toàn.
+            if [[ "$RESULT" == *"ERR_NAME_NOT_RESOLVED"* || "$RESULT" == *"ERR_CONNECTION_REFUSED"* || "$RESULT" == *"Timeout"* ]]; then
+              echo "❌ $url sập thật sự!"
               
-              JSON_PAYLOAD=$(cat <<EOF
+              # Gửi Discord dùng định dạng an toàn hơn để tránh lỗi 'Malformed input'
+              curl -H "Content-Type: application/json" \
+                   -X POST \
+                   -d @- "$DISCORD_WEBHOOK" <<EOF
               {
                 "embeds": [{
                   "title": "🚨 CẢNH BÁO WEBSITE DOWN",
                   "color": 15158528,
                   "fields": [
                     {"name": "Địa chỉ", "value": "$url", "inline": false},
-                    {"name": "Trạng thái", "value": "Không phản hồi (Timeout)", "inline": true},
+                    {"name": "Lỗi", "value": "Không thể truy cập hệ thống", "inline": true},
                     {"name": "Thời gian", "value": "$(date '+%H:%M:%S %d/%m/%Y') UTC", "inline": true}
                   ],
-                  "footer": {"text": "Matrix: $CURRENT_INDEX | GitHub Actions Monitor"}
+                  "footer": {"text": "Matrix: $CURRENT_INDEX"}
                 }]
               }
-          EOF
-              )
-              curl -H "Content-Type: application/json" -X POST -d "$JSON_PAYLOAD" "$DISCORD_WEBHOOK"
+EOF
             else
-              echo "✅ $url Online."
+              echo "✅ $url Online (Hoặc trả về mã lỗi có chủ đích)."
             fi
+            
             agent-browser close || true
           done
