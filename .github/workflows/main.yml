@@ -1,8 +1,6 @@
-name: Pro Keep Alive (Fast-Parallel)
+name: Keep Alive
 
 on:
-  schedule:
-    - cron: "* * * * *"
   workflow_dispatch:
 
 jobs:
