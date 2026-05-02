@@ -2,6 +2,8 @@ name: Keep Alive
 
 on:
   workflow_dispatch:
+  repository_dispatch:
+    types: [up_keep]
 
 jobs:
   ping:
