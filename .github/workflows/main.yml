@@ -25,7 +25,7 @@ jobs:
           GH_TOKEN: "${{ secrets.GH_PAT }}"
           RAW_CONFIG_URL: "${{ secrets.RAW_CONFIG_URL }}"
         run: |
-          # 1. Tải danh sách bảo mật từ repo private bằng curl (chỉ dùng curl để tải file txt cấu hình)
+          # 1. Tải danh sách cấu hình bảo mật
           RAW_LIST=$(curl -s -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL")
           
           if [ -z "$RAW_LIST" ] || [[ "$RAW_LIST" == *"Not Found"* || "$RAW_LIST" == *"Bad credentials"* ]]; then
@@ -42,31 +42,40 @@ jobs:
           for (( i=$CURRENT_INDEX; i<$TOTAL; i+=5 )); do
             line="${ALL_URLS[$i]}"
             
-            # Tách URL và Header Auth (Ví dụ: Authorization: Bearer hf_xxx)
+            # Tách lấy URL
             url=$(echo "$line" | cut -d'|' -f1 | sed 's/[[:space:]]*$//')
-            auth_header=$(echo "$line" | cut -d'|' -f2- -s | sed 's/^[[:space:]]*//')
-
-            echo "🚀 Trình duyệt đang truy cập: $url"
+            echo "🚀 Đang đánh thức: $url"
             
-            # 4. Sử dụng agent-browser để mở Web
-            # Nếu có Auth Header, ta cấu hình agent-browser gửi kèm custom header đó
-            if [ -n "$auth_header" ]; then
-              echo "🔑 Truy cập kèm Header bảo mật..."
-              # Định dạng truyền header cho agent-browser: --header "Tên: Giá trị"
-              RESULT=$(agent-browser open "$url" --header "$auth_header" --timeout 25000 2>&1) || true
-            else
-              RESULT=$(agent-browser open "$url" --timeout 25000 2>&1) || true
+            # Gom các header đi kèm sau dấu "|"
+            HEADER_PARAMS=""
+            num_pipes=$(grep -o "|" <<< "$line" | wc -l)
+            
+            if [ "$num_pipes" -gt 0 ]; then
+              for (( j=2; j<=num_pipes+1; j++ )); do
+                single_header=$(echo "$line" | cut -d'|' -f$j | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                if [ -n "$single_header" ]; then
+                  HEADER_PARAMS="$HEADER_PARAMS --header \"$single_header\""
+                fi
+              done
             fi
             
-            # 5. Phân tích kết quả từ trình duyệt giả lập
-            if [[ "$RESULT" == *"ERR_NAME_NOT_RESOLVED"* || "$RESULT" == *"ERR_CONNECTION_REFUSED"* || "$RESULT" == *"Timeout"* || "$RESULT" == *"401"* || "$RESULT" == *"403"* ]]; then
-              echo "❌ $url lỗi hoặc bị từ chối! Chi tiết: $RESULT"
+            # 4. Gọi trình duyệt mở Web để kích hoạt Keep Alive
+            RESULT=$(eval "agent-browser open \"$url\" $HEADER_PARAMS --timeout 25000 2>&1") || true
+            
+            # 5. Bộ lọc lỗi tối giản dành riêng cho Keep Alive
+            # CHỈ BÁO LỖI KHI: Tên miền không tồn tại, sập kết nối, timeout, hoặc lỗi sập server phía backend (5xx)
+            if [[ "$RESULT" == *"ERR_"* || "$RESULT" == *"Timeout"* || "$RESULT" == *"status: 5"* ]]; then
+              echo "❌ $url THỰC SỰ SẬP! Chi tiết: $RESULT"
+              
+              SHORT_ERR=$(echo "$RESULT" | head -n 2 | cut -c1-100)
               
               # Gửi cảnh báo về Discord
-              MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO DOWN (BROWSER)\",\"color\":15158528,\"description\":\"**URL:** $url\n**Matrix:** $CURRENT_INDEX\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
+              MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO: WEB SẬP HOÀN TOÀN\",\"color\":15158528,\"description\":\"**URL:** $url\n**Lỗi:** $SHORT_ERR\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
               curl -s -H "Content-Type: application/json" -X POST -d "$MSG" "$DISCORD_WEBHOOK"
             else
-              echo "✅ $url Hoạt động tốt (Trình duyệt đã bypass thành công)."
+              # Các mã 2xx, 3xx hoặc thậm chí 4xx (Kể cả Hugging Face báo 401/403 do chặn nhẹ) 
+              # thì vẫn nghĩa là Server của họ đang chạy tốt và nhận được lệnh ping của mình.
+              echo "✅ $url Đã được đánh thức thành công (Hoặc đang Online)."
             fi
             
             agent-browser close || true
