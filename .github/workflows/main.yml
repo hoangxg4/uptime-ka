@@ -21,30 +21,52 @@ jobs:
       - name: Fast Wake Up
         env:
           DISCORD_WEBHOOK: "${{ secrets.DISCORD_WEBHOOK_URL }}"
-          RAW_LIST: "${{ vars.WEBSITES_LIST }}"
           CURRENT_INDEX: ${{ matrix.index }}
+          GH_TOKEN: "${{ secrets.GH_PAT }}"
+          RAW_CONFIG_URL: "${{ secrets.RAW_CONFIG_URL }}"
         run: |
-          # 1. Chuyển danh sách thành mảng
-          CLEAN_LIST=$(echo "$RAW_LIST" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
+          # 1. Tải danh sách bảo mật từ repo private bằng curl (chỉ dùng curl để tải file txt cấu hình)
+          RAW_LIST=$(curl -s -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL")
+          
+          if [ -z "$RAW_LIST" ] || [[ "$RAW_LIST" == *"Not Found"* || "$RAW_LIST" == *"Bad credentials"* ]]; then
+            echo "❌ Không thể tải file cấu hình từ Secret!"
+            exit 1
+          fi
+
+          # 2. Xử lý khoảng trắng và dòng trống
+          CLEAN_LIST=$(echo "$RAW_LIST" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
           readarray -t ALL_URLS <<< "$CLEAN_LIST"
           TOTAL=${#ALL_URLS[@]}
           
-          # 2. Chạy thẳng luôn, không đợi chờ
+          # 3. Vòng lặp chia tải Matrix 5
           for (( i=$CURRENT_INDEX; i<$TOTAL; i+=5 )); do
-            url="${ALL_URLS[$i]}"
-            echo "🚀 Đang đánh thức: $url"
+            line="${ALL_URLS[$i]}"
             
-            # Mở web, nếu lỗi thì bắt kết quả
-            RESULT=$(agent-browser open "$url" --timeout 25000 2>&1) || true
+            # Tách URL và Header Auth (Ví dụ: Authorization: Bearer hf_xxx)
+            url=$(echo "$line" | cut -d'|' -f1 | sed 's/[[:space:]]*$//')
+            auth_header=$(echo "$line" | cut -d'|' -f2- -s | sed 's/^[[:space:]]*//')
+
+            echo "🚀 Trình duyệt đang truy cập: $url"
             
-            if [[ "$RESULT" == *"ERR_NAME_NOT_RESOLVED"* || "$RESULT" == *"ERR_CONNECTION_REFUSED"* || "$RESULT" == *"Timeout"* ]]; then
-              echo "❌ $url sập!"
+            # 4. Sử dụng agent-browser để mở Web
+            # Nếu có Auth Header, ta cấu hình agent-browser gửi kèm custom header đó
+            if [ -n "$auth_header" ]; then
+              echo "🔑 Truy cập kèm Header bảo mật..."
+              # Định dạng truyền header cho agent-browser: --header "Tên: Giá trị"
+              RESULT=$(agent-browser open "$url" --header "$auth_header" --timeout 25000 2>&1) || true
+            else
+              RESULT=$(agent-browser open "$url" --timeout 25000 2>&1) || true
+            fi
+            
+            # 5. Phân tích kết quả từ trình duyệt giả lập
+            if [[ "$RESULT" == *"ERR_NAME_NOT_RESOLVED"* || "$RESULT" == *"ERR_CONNECTION_REFUSED"* || "$RESULT" == *"Timeout"* || "$RESULT" == *"401"* || "$RESULT" == *"403"* ]]; then
+              echo "❌ $url lỗi hoặc bị từ chối! Chi tiết: $RESULT"
               
-              # Gửi Discord gọn trong 1 dòng để không bao giờ lỗi YAML
-              MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO DOWN\",\"color\":15158528,\"description\":\"**URL:** $url\n**Matrix:** $CURRENT_INDEX\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
+              # Gửi cảnh báo về Discord
+              MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO DOWN (BROWSER)\",\"color\":15158528,\"description\":\"**URL:** $url\n**Matrix:** $CURRENT_INDEX\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
               curl -s -H "Content-Type: application/json" -X POST -d "$MSG" "$DISCORD_WEBHOOK"
             else
-              echo "✅ $url Online."
+              echo "✅ $url Hoạt động tốt (Trình duyệt đã bypass thành công)."
             fi
             
             agent-browser close || true
