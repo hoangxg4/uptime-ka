@@ -62,9 +62,11 @@ jobs:
             # 4. Gọi trình duyệt mở Web để kích hoạt Keep Alive
             RESULT=$(eval "agent-browser open \"$url\" $HEADER_PARAMS --timeout 25000 2>&1") || true
             
-            # 5. Bộ lọc lỗi tối giản dành riêng cho Keep Alive
-            # CHỈ BÁO LỖI KHI: Tên miền không tồn tại, sập kết nối, timeout, hoặc lỗi sập server phía backend (5xx)
-            if [[ "$RESULT" == *"ERR_"* || "$RESULT" == *"Timeout"* || "$RESULT" == *"status: 5"* ]]; then
+            # 5. Bộ lọc lỗi tối giản dành riêng cho Keep Alive (Chấp nhận cả mã lỗi 404)
+            # Nếu kết quả chứa lỗi Code (như 404) -> Chấp nhận vì server có phản hồi.
+            if [[ "$RESULT" == *"ERR_HTTP_RESPONSE_CODE_FAILURE"* ]]; then
+              echo "✅ $url Phản hồi mã lỗi chủ đích (Ví dụ: 404 Not Found hoặc 401/403). Server vẫn SỐNG và đã được đánh thức!"
+            elif [[ "$RESULT" == *"ERR_"* || "$RESULT" == *"Timeout"* || "$RESULT" == *"status: 5"* ]]; then
               echo "❌ $url THỰC SỰ SẬP! Chi tiết: $RESULT"
               
               SHORT_ERR=$(echo "$RESULT" | head -n 2 | cut -c1-100)
@@ -73,8 +75,6 @@ jobs:
               MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO: WEB SẬP HOÀN TOÀN\",\"color\":15158528,\"description\":\"**URL:** $url\n**Lỗi:** $SHORT_ERR\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
               curl -s -H "Content-Type: application/json" -X POST -d "$MSG" "$DISCORD_WEBHOOK"
             else
-              # Các mã 2xx, 3xx hoặc thậm chí 4xx (Kể cả Hugging Face báo 401/403 do chặn nhẹ) 
-              # thì vẫn nghĩa là Server của họ đang chạy tốt và nhận được lệnh ping của mình.
               echo "✅ $url Đã được đánh thức thành công (Hoặc đang Online)."
             fi
             
