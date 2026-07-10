@@ -148,9 +148,7 @@ jobs:
           # ── Notify on failure ──
           if [ $FAIL -gt 0 ]; then
             FAIL_DETAILS=$(cat "$FAIL_LOG")
-            MSG="Worker $CURRENT_INDEX: $FAIL/${#PIDS[@]} FAILED at $(date '+%H:%M %d/%m/%Y')
-
-$FAIL_DETAILS"
+            MSG="Worker $CURRENT_INDEX: $FAIL/${#PIDS[@]} FAILED at $(date '+%H:%M %d/%m/%Y')"$'\n\n'"$FAIL_DETAILS"
             ntfy_send "⚠️ Keep Alive: $FAIL FAILED" "high" "$MSG"
           fi
 
