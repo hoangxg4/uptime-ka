@@ -11,88 +11,125 @@ jobs:
         index: [0, 1, 2, 3, 4]
       fail-fast: false
       max-parallel: 5
-    
+
     steps:
-      - name: Install agent-browser
+      - name: Install obscura
         run: |
-          npm install -g agent-browser --silent 2>/dev/null
-          timeout 60 agent-browser install --with-deps || {
-            echo "⚠️ Install with-deps timeout, retrying without..."
-            timeout 30 agent-browser install
+          curl -sLO https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-x86_64-linux.tar.gz
+          tar xzf obscura-x86_64-linux.tar.gz
+          chmod +x obscura obscura-worker
+          sudo mv obscura obscura-worker /usr/local/bin/
+          echo "✅ obscura ready"
+
+      - name: Wake Up Services
+        env:
+          NTFY_URL: ${{ secrets.NTFY_URL }}
+          CURRENT_INDEX: ${{ matrix.index }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          RAW_CONFIG_URL: ${{ secrets.RAW_CONFIG_URL }}
+          DEBUG: "0"
+        run: |
+          set -uo pipefail
+
+          # ── Mask secrets ──
+          echo "::add-mask::$GH_TOKEN"
+          echo "::add-mask::$RAW_CONFIG_URL"
+          [ -n "${NTFY_URL:-}" ] && echo "::add-mask::$NTFY_URL"
+
+          # ── Helpers ──
+          ntfy_send() {
+            [ -n "${NTFY_URL:-}" ] && curl -sf -H "Title: $1" -H "Priority: ${2:-default}" -d "$3" "$NTFY_URL" >/dev/null 2>&1
           }
 
-      - name: Fast Wake Up
-        env:
-          DISCORD_WEBHOOK: "${{ secrets.DISCORD_WEBHOOK_URL }}"
-          CURRENT_INDEX: ${{ matrix.index }}
-          GH_TOKEN: "${{ secrets.GH_PAT }}"
-          RAW_CONFIG_URL: "${{ secrets.RAW_CONFIG_URL }}"
-        run: |
-          # Ẩn token và URL cấu hình khỏi log
-          echo "::add-mask::${GH_TOKEN}"
-          echo "::add-mask::${RAW_CONFIG_URL}"
-          echo "::add-mask::${DISCORD_WEBHOOK}"
-
-          # 1. Tải danh sách cấu hình bảo mật
-          RAW_LIST=$(curl -s -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL")
-          
-          if [ -z "$RAW_LIST" ] || [[ "$RAW_LIST" == *"Not Found"* || "$RAW_LIST" == *"Bad credentials"* ]]; then
-            echo "❌ Không thể tải file cấu hình từ Secret!"
+          # ── Load config ──
+          RAW=$(curl -sf -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL") || {
+            echo "❌ Failed to load config"
+            ntfy_send "❌ Config Load Failed" "high" "Job $CURRENT_INDEX: Cannot fetch config"
             exit 1
-          fi
+          }
 
-          # 2. Xử lý khoảng trắng và dòng trống
-          CLEAN_LIST=$(echo "$RAW_LIST" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
-          readarray -t ALL_URLS <<< "$CLEAN_LIST"
-          TOTAL=${#ALL_URLS[@]}
-          
-          echo "📋 Tổng số mục cần ping: $TOTAL (job index: $CURRENT_INDEX)"
-          
-          # 3. Vòng lặp chia tải Matrix 5
-          for (( i=$CURRENT_INDEX; i<$TOTAL; i+=5 )); do
-            line="${ALL_URLS[$i]}"
-            
-            # Tách lấy URL và ẩn khỏi log
-            url=$(echo "$line" | cut -d'|' -f1 | sed 's/[[:space:]]*$//')
-            echo "::add-mask::${url}"
-            echo "🚀 Đang đánh thức: $url"
-            
-            # Gom các header đi kèm sau dấu "|" thành JSON
-            HEADER_JSON=""
-            num_pipes=$(grep -o "|" <<< "$line" | wc -l)
-            
+          readarray -t URLS <<< "$(echo "$RAW" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')"
+          TOTAL=${#URLS[@]}
+          echo "📋 Targets: $TOTAL | Worker: $CURRENT_INDEX/5"
+          echo ""
+
+          # ── Check single URL via curl ──
+          check_url() {
+            local line="$1"
+            local url=$(echo "$line" | cut -d'|' -f1 | xargs)
+            local num_pipes=$(grep -o "|" <<< "$line" | wc -l)
+
+            echo "::add-mask::$url"
+
+            # Build curl args
+            local curl_args=(-s --max-time 15 -L)
+            local header_info=""
             if [ "$num_pipes" -gt 0 ]; then
-              JSON_PAIRS=""
               for (( j=2; j<=num_pipes+1; j++ )); do
-                single_header=$(echo "$line" | cut -d'|' -f$j | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                if [ -n "$single_header" ]; then
-                  h_key=$(echo "$single_header" | cut -d':' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                  h_val=$(echo "$single_header" | cut -d':' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                  if [ -n "$JSON_PAIRS" ]; then JSON_PAIRS="$JSON_PAIRS,"; fi
-                  JSON_PAIRS="$JSON_PAIRS\"$h_key\":\"$h_val\""
+                local h=$(echo "$line" | cut -d'|' -f$j | xargs)
+                if [ -n "$h" ]; then
+                  curl_args+=(-H "$h")
+                  header_info="$h"
                 fi
               done
-              if [ -n "$JSON_PAIRS" ]; then
-                HEADER_JSON="--headers '{${JSON_PAIRS}}'"
-              fi
             fi
-            
-            # 4. Gọi trình duyệt mở Web (timeout 30s防止 kẹt)
-            RESULT=$(timeout 30 bash -c "eval \"agent-browser open \\\"$url\\\" $HEADER_JSON --timeout 25000 2>&1\"") || true
-            
-            # 5. Bộ lọc lỗi tối giản dành riêng cho Keep Alive (Chấp nhận cả mã lỗi 404)
-            if [[ "$RESULT" == *"ERR_HTTP_RESPONSE_CODE_FAILURE"* ]]; then
-              echo "✅ Phản hồi mã lỗi chủ đích (Ví dụ: 404/401/403). Server vẫn SỐNG!"
-            elif [[ "$RESULT" == *"ERR_"* || "$RESULT" == *"Timeout"* || "$RESULT" == *"status: 5"* ]]; then
-              echo "❌ THỰC SỰ SẬP! Chi tiết: $RESULT"
-              
-              SHORT_ERR=$(echo "$RESULT" | head -n 2 | cut -c1-100)
-              
-              MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO: WEB SẬP HOÀN TOÀN\",\"color\":15158528,\"description\":\"**Lỗi:** $SHORT_ERR\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
-              curl -s -H "Content-Type: application/json" -X POST -d "$MSG" "$DISCORD_WEBHOOK"
+
+            # Debug: show header
+            if [ "${DEBUG:-0}" = "1" ] && [ -n "$header_info" ]; then
+              echo "  🔍 Header: $header_info"
+            fi
+
+            # Execute
+            local body_file=$(mktemp)
+            local start_ms=$(date +%s%N)
+            local http_code=$(curl "${curl_args[@]}" -o "$body_file" -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+            local end_ms=$(date +%s%N)
+            local elapsed_ms=$(( (end_ms - start_ms) / 1000000 ))
+
+            # Extract title + debug body
+            local title=$(sed -n 's/.*<title>\([^<]*\)<.*/\1/p' "$body_file" 2>/dev/null | head -1 | xargs)
+            [ -z "$title" ] && title="(no title)"
+            if [ "${DEBUG:-0}" = "1" ]; then
+              echo "  🔍 Body: $(head -c 300 "$body_file" 2>/dev/null | tr '\n' ' ')"
+            fi
+            rm -f "$body_file"
+
+            if [[ "$http_code" =~ ^[23] ]]; then
+              echo "  ✅ [$http_code] $title (${elapsed_ms}ms)"
+              return 0
             else
-              echo "✅ Đã được đánh thức thành công (Hoặc đang Online)."
+              echo "  ❌ [$http_code] $title (${elapsed_ms}ms)"
+              return 1
             fi
-            
-            agent-browser close || true
+          }
+
+          # ── Parallel processing ──
+          OK=0
+          FAIL=0
+          PIDS=()
+
+          for (( i=$CURRENT_INDEX; i<$TOTAL; i+=5 )); do
+            check_url "${URLS[$i]}" &
+            PIDS+=($!)
           done
+
+          for pid in "${PIDS[@]}"; do
+            if wait $pid; then
+              OK=$((OK + 1))
+            else
+              FAIL=$((FAIL + 1))
+            fi
+          done
+
+          # ── Summary ──
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📊 Worker $CURRENT_INDEX │ ✅ $OK │ ❌ $FAIL │ Total: ${#PIDS[@]}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # ── Notify on failure ──
+          if [ $FAIL -gt 0 ]; then
+            ntfy_send "⚠️ Keep Alive: $FAIL FAILED" "high" "Worker $CURRENT_INDEX: $FAIL/${#PIDS[@]} services DOWN at $(date '+%H:%M %d/%m/%Y')"
+          fi
+
+          [ $FAIL -gt 0 ] && exit 1
