@@ -13,7 +13,6 @@ jobs:
       max-parallel: 5
     
     steps:
-      # Bước 1: Tải Obscura Binary trực tiếp từ GitHub Releases (~2 giây)
       - name: Install Obscura Browser
         run: |
           curl -LO https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-x86_64-linux.tar.gz
@@ -22,7 +21,72 @@ jobs:
           sudo mv obscura /usr/local/bin/
           echo "✅ Đã cài đặt Obscura Browser thành công!"
 
-      # Bước 2: Chạy vòng lặp gọi Obscura thông qua CLI/HTTP mượt mà
+      # Tách riêng phần tạo file Python bằng cú pháp chặn an toàn của YAML
+      - name: Create Python Engine File
+        run: |
+          cat << 'EOF' > run_keepalive.py
+          import sys
+          import json
+          import urllib.request
+          import time
+
+          def call_cdp(url, token_val):
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:9222/json") as response:
+                      tabs = json.loads(response.read().decode())
+                  
+                  if not tabs:
+                      print("❌ Không tìm thấy tab hoạt động nào trên Obscura!")
+                      return False
+                      
+                  rpc_url = "http://127.0.0.1:9222/json/rpc"
+                  
+                  req_net = urllib.request.Request(
+                      rpc_url, 
+                      data=json.dumps({"id": 1, "method": "Network.enable", "params": {}}).encode(),
+                      headers={"Content-Type": "application/json"}
+                  )
+                  urllib.request.urlopen(req_net)
+
+                  if token_val:
+                      headers_payload = {"headers": {"Authorization": token_val}}
+                      req_header = urllib.request.Request(
+                          rpc_url,
+                          data=json.dumps({"id": 2, "method": "Network.setExtraHTTPHeaders", "params": headers_payload}).encode(),
+                          headers={"Content-Type": "application/json"}
+                      )
+                      urllib.request.urlopen(req_header)
+                      print("[Python] Đã gài Header Authorization vào Session.")
+
+                  navigate_payload = {"url": url}
+                  req_nav = urllib.request.Request(
+                      rpc_url,
+                      data=json.dumps({"id": 3, "method": "Page.navigate", "params": navigate_payload}).encode(),
+                      headers={"Content-Type": "application/json"}
+                  )
+                  with urllib.request.urlopen(req_nav) as res:
+                      res_data = json.loads(res.read().decode())
+                      if "error" in res_data:
+                          print(f"❌ Lỗi từ Obscura: {res_data['error']}")
+                          return False
+                          
+                  time.sleep(8)
+                  print(f"✅ Đã ping thành công tới {url}")
+                  return True
+
+              except Exception as e:
+                  print(f"❌ Lỗi kết nối đến Obscura Server: {str(e)}")
+                  return False
+
+          if __name__ == "__main__":
+              target_url = sys.argv[1]
+              token = sys.argv[2] if len(sys.argv) > 2 else ""
+              success = call_cdp(target_url, token)
+              sys.exit(0 if success else 1)
+          EOF
+          # Xóa khoảng trắng thừa thụt lề đầu dòng của cat << 'EOF' để Python chạy đúng thụt lề (indentation)
+          sed -i 's/^[[:space:]]\{1,10\}//' run_keepalive.py
+
       - name: Fast Wake Up
         env:
           DISCORD_WEBHOOK: "${{ secrets.DISCORD_WEBHOOK_URL }}"
@@ -30,7 +94,6 @@ jobs:
           GH_TOKEN: "${{ secrets.GH_PAT }}"
           RAW_CONFIG_URL: "${{ secrets.RAW_CONFIG_URL }}"
         run: |
-          # 1. Tải danh sách cấu hình bảo mật từ RAW URL
           RAW_LIST=$(curl -s -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL")
           
           if [ -z "$RAW_LIST" ] || [[ "$RAW_LIST" == *"Not Found"* || "$RAW_LIST" == *"Bad credentials"* ]]; then
@@ -38,47 +101,38 @@ jobs:
             exit 1
           fi
 
-          # 2. Xử lý khoảng trắng và dòng trống
           CLEAN_LIST=$(echo "$RAW_LIST" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
           readarray -t ALL_URLS <<< "$CLEAN_LIST"
           TOTAL=${#ALL_URLS[@]}
           
-          # 3. Vòng lặp chia tải Matrix 5
+          obscura serve --port 9222 --stealth > obscura_server.log 2>&1 &
+          sleep 2
+
           for (( i=$CURRENT_INDEX; i<$TOTAL; i+=5 )); do
             line="${ALL_URLS[$i]}"
-            
-            # Tách lấy URL
             url=$(echo "$line" | cut -d'|' -f1 | sed 's/[[:space:]]*$//')
             echo "--------------------------------------------------------"
-            echo "🚀 Đang tiến hành gọi Obscura nạp trang: $url"
             
-            # Tách lấy chuỗi Header chứa Token (nếu có)
             token_val=""
             if [[ "$line" == *"|"* ]]; then
               token_val=$(echo "$line" | cut -d'|' -f2- | sed 's/Authorization://g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             fi
 
-            # 4. Kích hoạt Obscura cho từng URL đơn lẻ để tránh xung đột Session CDP
-            # Sử dụng cờ --header trực tiếp từ CLI của Obscura (nếu có token) giúp loại bỏ hoàn toàn script JS lằng nhằng
-            if [ -n "$token_val" ]; then
-              echo "[Obscura] Đang ghim Token Authorization kèm theo Request..."
-              RESULT=$(obscura --stealth --header "Authorization: $token_val" --timeout 15 screenshot --url "$url" /dev/null 2>&1) || true
-            else
-              RESULT=$(obscura --stealth --timeout 15 screenshot --url "$url" /dev/null 2>&1) || true
-            fi
+            RESULT=$(python3 run_keepalive.py "$url" "$token_val" 2>&1) || true
             
-            echo "=== [OBSCURA BROWSER LOGS] ==="
+            echo "=== [EXECUTION LOGS] ==="
             echo "$RESULT"
-            echo "============================="
+            echo "========================"
             
-            # 5. Kiểm tra lỗi dựa vào phản hồi log hệ thống của Obscura
-            if [[ "$RESULT" == *"error"* || "$RESULT" == *"failed"* || "$RESULT" == *"Unauthorized"* ]]; then
-              echo "❌ $url Gặp sự cố tải trang hoặc Token không hợp lệ!"
-              
-              SHORT_ERR=$(echo "$RESULT" | head -n 2 | cut -c1-100)
+            if [[ "$RESULT" == *"❌"* ]]; then
+              echo "❌ $url Gặp sự cố!"
+              SHORT_ERR=$(echo "$RESULT" | grep "❌" | head -n 1 | cut -c1-100)
               MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO: KEEPALIVE THẤT BẠI\",\"color\":15158528,\"description\":\"**URL:** $url\n**Lỗi:** $SHORT_ERR\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
               curl -s -H "Content-Type: application/json" -X POST -d "$MSG" "$DISCORD_WEBHOOK"
             else
-              echo "✅ $url Đã kích hoạt ứng dụng thành công."
+              echo "✅ $url Hoàn tất chu kỳ kích hoạt."
             fi
           done
+
+          rm -f run_keepalive.py
+          pkill -f obscura || true
