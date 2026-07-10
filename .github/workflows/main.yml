@@ -13,9 +13,17 @@ jobs:
       max-parallel: 5
     
     steps:
+      # Bước 1: Setup Bun thần tốc
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      # Bước 2: Dùng Bun cài đặt agent-browser siêu nhanh
       - name: Install agent-browser
         run: |
-          npm install -g agent-browser
+          bun install -g agent-browser
+          # Giữ nguyên lệnh cài đặt các dependency của trình duyệt ngầm (Puppeteer/Playwright nếu có)
           agent-browser install --with-deps
 
       - name: Fast Wake Up
@@ -25,7 +33,7 @@ jobs:
           GH_TOKEN: "${{ secrets.GH_PAT }}"
           RAW_CONFIG_URL: "${{ secrets.RAW_CONFIG_URL }}"
         run: |
-          # 1. Tải danh sách cấu hình bảo mật (Bỏ -s để hiện log curl)
+          # 1. Tải danh sách cấu hình bảo mật (Giữ curl bình thường hiển thị tiến trình log)
           RAW_LIST=$(curl -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL")
           
           if [ -z "$RAW_LIST" ] || [[ "$RAW_LIST" == *"Not Found"* || "$RAW_LIST" == *"Bad credentials"* ]]; then
@@ -47,21 +55,22 @@ jobs:
             echo "--------------------------------------------------------"
             echo "🚀 Đang đánh thức và render toàn bộ trang: $url"
             
-            # Gom các header đi kèm sau dấu "|"
-            HEADER_PARAMS=""
+            # SỬA LỖI HEADER: Dùng mảng Bash thay vì chuỗi thuần để tránh lỗi Nuốt Dấu của eval
+            HEADER_PARAMS=()
             num_pipes=$(grep -o "|" <<< "$line" | wc -l)
             
             if [ "$num_pipes" -gt 0 ]; then
               for (( j=2; j<=num_pipes+1; j++ )); do
                 single_header=$(echo "$line" | cut -d'|' -f$j | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
                 if [ -n "$single_header" ]; then
-                  HEADER_PARAMS="$HEADER_PARAMS --header \"$single_header\""
+                  # Thêm từng cặp tham số trực tiếp vào mảng
+                  HEADER_PARAMS+=("--header" "$single_header")
                 fi
               done
             fi
             
-            # 4. Gọi trình duyệt mở Web
-            RESULT=$(eval "agent-browser open \"$url\" $HEADER_PARAMS --timeout 60000 --wait-until networkidle --screenshot 2>&1") || true
+            # 4. Gọi trình duyệt mở Web (Không dùng eval nữa để bảo toàn cấu trúc mảng Header)
+            RESULT=$(agent-browser open "$url" "${HEADER_PARAMS[@]}" --timeout 60000 --wait-until networkidle --screenshot 2>&1) || true
             
             # In FULL LOG của agent-browser ra GitHub Actions Console
             echo "=== [AGENT-BROWSER LOGS] ==="
