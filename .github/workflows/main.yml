@@ -23,68 +23,9 @@ jobs:
 
       - name: Create Python Engine File
         run: |
-          cat << 'EOF' > run_keepalive.py
-          import sys
-          import json
-          import urllib.request
-          import time
-
-          def call_cdp(url, token_val):
-              try:
-                  with urllib.request.urlopen("http://127.0.0.1:9222/json") as response:
-                      tabs = json.loads(response.read().decode())
-                  
-                  if not tabs:
-                      print("❌ Không tìm thấy tab hoạt động nào trên Obscura!")
-                      return False
-                      
-                  rpc_url = "http://127.0.0.1:9222/json/rpc"
-                  
-                  req_net = urllib.request.Request(
-                      rpc_url, 
-                      data=json.dumps({"id": 1, "method": "Network.enable", "params": {}}).encode(),
-                      headers={"Content-Type": "application/json"}
-                  )
-                  urllib.request.urlopen(req_net)
-
-                  if token_val:
-                      headers_payload = {"headers": {"Authorization": token_val}}
-                      req_header = urllib.request.Request(
-                          rpc_url,
-                          data=json.dumps({"id": 2, "method": "Network.setExtraHTTPHeaders", "params": headers_payload}).encode(),
-                          headers={"Content-Type": "application/json"}
-                      )
-                      urllib.request.urlopen(req_header)
-                      print("[Python] Đã gài Header Authorization vào Session.")
-
-                  navigate_payload = {"url": url}
-                  req_nav = urllib.request.Request(
-                      rpc_url,
-                      data=json.dumps({"id": 3, "method": "Page.navigate", "params": navigate_payload}).encode(),
-                      headers={"Content-Type": "application/json"}
-                  )
-                  with urllib.request.urlopen(req_nav) as res:
-                      res_data = json.loads(res.read().decode())
-                      if "error" in res_data:
-                          print(f"❌ Lỗi từ Obscura: {res_data['error']}")
-                          return False
-                          
-                  time.sleep(8)
-                  print(f"✅ Đã ping thành công tới {url}")
-                  return True
-
-              except Exception as e:
-                  print(f"❌ Lỗi kết nối đến Obscura Server: {str(e)}")
-                  return False
-
-          if __name__ == "__main__":
-              target_url = sys.argv[1]
-              token = sys.argv[2] if len(sys.argv) > 2 else ""
-              success = call_cdp(target_url, token)
-              sys.exit(0 if success else 1)
-          EOF
-          # Xóa chính xác 10 khoảng trắng thừa ở đầu mỗi dòng do khối mã YAML tạo ra
-          sed -i 's/^          //' run_keepalive.py
+          # Sử dụng cơ chế echo -e với định dạng \n và \t rõ ràng để bảo vệ cấu trúc Python 100%
+          echo -e 'import sys\nimport json\nimport urllib.request\nimport time\n\ndef call_cdp(url, token_val):\n\ttry:\n\t\twith urllib.request.urlopen("http://127.0.0.1:9222/json") as response:\n\t\t\ttabs = json.loads(response.read().decode())\n\t\tif not tabs:\n\t\t\tprint("❌ Không tìm thấy tab hoạt động nào trên Obscura!")\n\t\t\treturn False\n\t\trpc_url = "http://127.0.0.1:9222/json/rpc"\n\t\treq_net = urllib.request.Request(rpc_url, data=json.dumps({"id": 1, "method": "Network.enable", "params": {}}).encode(), headers={"Content-Type": "application/json"})\n\t\turllib.request.urlopen(req_net)\n\t\tif token_val:\n\t\t\theaders_payload = {"headers": {"Authorization": token_val}}\n\t\t\treq_header = urllib.request.Request(rpc_url, data=json.dumps({"id": 2, "method": "Network.setExtraHTTPHeaders", "params": headers_payload}).encode(), headers={"Content-Type": "application/json"})\n\t\t\turllib.request.urlopen(req_header)\n\t\t\tprint("[Python] Đã gài Header Authorization vào Session.")\n\t\tnavigate_payload = {"url": url}\n\t\treq_nav = urllib.request.Request(rpc_url, data=json.dumps({"id": 3, "method": "Page.navigate", "params": navigate_payload}).encode(), headers={"Content-Type": "application/json"})\n\t\twith urllib.request.urlopen(req_nav) as res:\n\t\t\tres_data = json.loads(res.read().decode())\n\t\t\tif "error" in res_data:\n\t\t\t\tprint(f"❌ Lỗi từ Obscura: {res_data[\"error\"]}")\n\t\t\t\treturn False\n\t\ttime.sleep(8)\n\t\tprint(f"✅ Đã ping thành công tới {url}")\n\t\treturn True\n\texcept Exception as e:\n\t\tprint(f"❌ Lỗi kết nối đến Obscura Server: {str(e)}")\n\t\treturn False\n\nif __name__ == "__main__":\n\ttarget_url = sys.argv[1]\n\ttoken = sys.argv[2] if len(sys.argv) > 2 else ""\n\tsuccess = call_cdp(target_url, token)\n\tsys.exit(0 if success else 1)' > run_keepalive.py
+          echo "✅ Đã khởi tạo file Python Engine thành công!"
 
       - name: Fast Wake Up
         env:
