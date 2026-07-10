@@ -21,71 +21,68 @@ jobs:
           sudo mv obscura /usr/local/bin/
           echo "✅ Đã cài đặt Obscura Browser thành công!"
 
-      # Tách riêng phần tạo file Python bằng cú pháp chặn an toàn của YAML
       - name: Create Python Engine File
         run: |
           cat << 'EOF' > run_keepalive.py
-          import sys
-          import json
-          import urllib.request
-          import time
+import sys
+import json
+import urllib.request
+import time
 
-          def call_cdp(url, token_val):
-              try:
-                  with urllib.request.urlopen("http://127.0.0.1:9222/json") as response:
-                      tabs = json.loads(response.read().decode())
-                  
-                  if not tabs:
-                      print("❌ Không tìm thấy tab hoạt động nào trên Obscura!")
-                      return False
-                      
-                  rpc_url = "http://127.0.0.1:9222/json/rpc"
-                  
-                  req_net = urllib.request.Request(
-                      rpc_url, 
-                      data=json.dumps({"id": 1, "method": "Network.enable", "params": {}}).encode(),
-                      headers={"Content-Type": "application/json"}
-                  )
-                  urllib.request.urlopen(req_net)
+def call_cdp(url, token_val):
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:9222/json") as response:
+            tabs = json.loads(response.read().decode())
+        
+        if not tabs:
+            print("❌ Không tìm thấy tab hoạt động nào trên Obscura!")
+            return False
+            
+        rpc_url = "http://127.0.0.1:9222/json/rpc"
+        
+        req_net = urllib.request.Request(
+            rpc_url, 
+            data=json.dumps({"id": 1, "method": "Network.enable", "params": {}}).encode(),
+            headers={"Content-Type": "application/json"}
+        )
+        urllib.request.urlopen(req_net)
 
-                  if token_val:
-                      headers_payload = {"headers": {"Authorization": token_val}}
-                      req_header = urllib.request.Request(
-                          rpc_url,
-                          data=json.dumps({"id": 2, "method": "Network.setExtraHTTPHeaders", "params": headers_payload}).encode(),
-                          headers={"Content-Type": "application/json"}
-                      )
-                      urllib.request.urlopen(req_header)
-                      print("[Python] Đã gài Header Authorization vào Session.")
+        if token_val:
+            headers_payload = {"headers": {"Authorization": token_val}}
+            req_header = urllib.request.Request(
+                rpc_url,
+                data=json.dumps({"id": 2, "method": "Network.setExtraHTTPHeaders", "params": headers_payload}).encode(),
+                headers={"Content-Type": "application/json"}
+            )
+            urllib.request.urlopen(req_header)
+            print("[Python] Đã gài Header Authorization vào Session.")
 
-                  navigate_payload = {"url": url}
-                  req_nav = urllib.request.Request(
-                      rpc_url,
-                      data=json.dumps({"id": 3, "method": "Page.navigate", "params": navigate_payload}).encode(),
-                      headers={"Content-Type": "application/json"}
-                  )
-                  with urllib.request.urlopen(req_nav) as res:
-                      res_data = json.loads(res.read().decode())
-                      if "error" in res_data:
-                          print(f"❌ Lỗi từ Obscura: {res_data['error']}")
-                          return False
-                          
-                  time.sleep(8)
-                  print(f"✅ Đã ping thành công tới {url}")
-                  return True
+        navigate_payload = {"url": url}
+        req_nav = urllib.request.Request(
+            rpc_url,
+            data=json.dumps({"id": 3, "method": "Page.navigate", "params": navigate_payload}).encode(),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req_nav) as res:
+            res_data = json.loads(res.read().decode())
+            if "error" in res_data:
+                print(f"❌ Lỗi từ Obscura: {res_data['error']}")
+                return False
+                
+        time.sleep(8)
+        print(f"✅ Đã ping thành công tới {url}")
+        return True
 
-              except Exception as e:
-                  print(f"❌ Lỗi kết nối đến Obscura Server: {str(e)}")
-                  return False
+    except Exception as e:
+        print(f"❌ Lỗi kết nối đến Obscura Server: {str(e)}")
+        return False
 
-          if __name__ == "__main__":
-              target_url = sys.argv[1]
-              token = sys.argv[2] if len(sys.argv) > 2 else ""
-              success = call_cdp(target_url, token)
-              sys.exit(0 if success else 1)
-          EOF
-          # Xóa khoảng trắng thừa thụt lề đầu dòng của cat << 'EOF' để Python chạy đúng thụt lề (indentation)
-          sed -i 's/^[[:space:]]\{1,10\}//' run_keepalive.py
+if __name__ == "__main__":
+    target_url = sys.argv[1]
+    token = sys.argv[2] if len(sys.argv) > 2 else ""
+    success = call_cdp(target_url, token)
+    sys.exit(0 if success else 1)
+EOF
 
       - name: Fast Wake Up
         env:
@@ -118,15 +115,21 @@ jobs:
               token_val=$(echo "$line" | cut -d'|' -f2- | sed 's/Authorization://g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             fi
 
-            RESULT=$(python3 run_keepalive.py "$url" "$token_val" 2>&1) || true
+            # Vô hiệu hóa chế độ 'exit on error' của bash để lưu được EXIT_CODE
+            set +e
+            RESULT=$(python3 run_keepalive.py "$url" "$token_val" 2>&1)
+            EXIT_CODE=$?
+            set -e
             
             echo "=== [EXECUTION LOGS] ==="
             echo "$RESULT"
             echo "========================"
             
-            if [[ "$RESULT" == *"❌"* ]]; then
+            if [ $EXIT_CODE -ne 0 ] || [[ "$RESULT" == *"❌"* ]]; then
               echo "❌ $url Gặp sự cố!"
-              SHORT_ERR=$(echo "$RESULT" | grep "❌" | head -n 1 | cut -c1-100)
+              
+              # Gộp thông báo lỗi để gửi qua Discord an toàn (loại bỏ ký tự xuống dòng)
+              SHORT_ERR=$(echo "$RESULT" | head -n 3 | tr -d '\n' | tr -d '"' | cut -c1-150)
               MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO: KEEPALIVE THẤT BẠI\",\"color\":15158528,\"description\":\"**URL:** $url\n**Lỗi:** $SHORT_ERR\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
               curl -s -H "Content-Type: application/json" -X POST -d "$MSG" "$DISCORD_WEBHOOK"
             else
