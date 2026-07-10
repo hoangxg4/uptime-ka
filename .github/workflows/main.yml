@@ -41,8 +41,8 @@ jobs:
             [ -n "${NTFY_URL:-}" ] && curl -sf -H "Title: $1" -H "Priority: ${2:-default}" -H "Content-Type: text/plain; charset=utf-8" -d "$3" "$NTFY_URL" >/dev/null 2>&1
           }
 
-          # ── Load config ──
-          RAW=$(curl -sf -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL") || {
+          # ── Load config (no-cache) ──
+          RAW=$(curl -sf -H "Authorization: token $GH_TOKEN" -H "Cache-Control: no-cache" "${RAW_CONFIG_URL}?_=$(date +%s)") || {
             echo "❌ Failed to load config"
             ntfy_send "❌ Config Load Failed" "high" "Worker $CURRENT_INDEX: Cannot fetch config"
             exit 1
