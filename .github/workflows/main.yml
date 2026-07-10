@@ -27,7 +27,7 @@ jobs:
           CURRENT_INDEX: ${{ matrix.index }}
           GH_TOKEN: ${{ secrets.GH_PAT }}
           RAW_CONFIG_URL: ${{ secrets.RAW_CONFIG_URL }}
-          DEBUG: "1"
+          DEBUG: "0"
         run: |
           set -uo pipefail
 
@@ -68,7 +68,7 @@ jobs:
             fi
 
             # Build curl args
-            local curl_args=(-s --max-time 15 -L)
+            local curl_args=(-s --max-time 30 -L)
             local header_info=""
             if [ "$num_pipes" -gt 0 ]; then
               for (( j=2; j<=num_pipes+1; j++ )); do
