@@ -105,12 +105,9 @@ jobs:
             fi
             rm -f "$body_file"
 
-            if [[ "$http_code" =~ ^[23] ]]; then
-              echo "  ✅ [$http_code] $title (${elapsed_ms}ms)"
-              return 0
-            else
+            if [[ "$http_code" =~ ^5 ]]; then
               echo "  ❌ [$http_code] $title (${elapsed_ms}ms)"
-              # Log failure details
+              # Log failure details (5xx only)
               {
                 echo "❌ [$http_code] $title (${elapsed_ms}ms)"
                 echo "   URL: $url"
@@ -118,6 +115,9 @@ jobs:
                 echo ""
               } >> "$FAIL_LOG"
               return 1
+            else
+              echo "  ✅ [$http_code] $title (${elapsed_ms}ms)"
+              return 0
             fi
           }
 
