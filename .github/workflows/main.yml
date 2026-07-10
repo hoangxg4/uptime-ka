@@ -38,13 +38,13 @@ jobs:
 
           # ── Helpers ──
           ntfy_send() {
-            [ -n "${NTFY_URL:-}" ] && curl -sf -H "Title: $1" -H "Priority: ${2:-default}" -d "$3" "$NTFY_URL" >/dev/null 2>&1
+            [ -n "${NTFY_URL:-}" ] && curl -sf -H "Title: $1" -H "Priority: ${2:-default}" -H "Content-Type: text/plain; charset=utf-8" -d "$3" "$NTFY_URL" >/dev/null 2>&1
           }
 
           # ── Load config ──
           RAW=$(curl -sf -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL") || {
             echo "❌ Failed to load config"
-            ntfy_send "❌ Config Load Failed" "high" "Job $CURRENT_INDEX: Cannot fetch config"
+            ntfy_send "❌ Config Load Failed" "high" "Worker $CURRENT_INDEX: Cannot fetch config"
             exit 1
           }
 
@@ -52,6 +52,10 @@ jobs:
           TOTAL=${#URLS[@]}
           echo "📋 Targets: $TOTAL | Worker: $CURRENT_INDEX/5"
           echo ""
+
+          # ── Failure log (temp file for background jobs) ──
+          FAIL_LOG=$(mktemp)
+          echo "" > "$FAIL_LOG"
 
           # ── Check single URL via curl ──
           check_url() {
@@ -106,6 +110,13 @@ jobs:
               return 0
             else
               echo "  ❌ [$http_code] $title (${elapsed_ms}ms)"
+              # Log failure details
+              {
+                echo "❌ [$http_code] $title (${elapsed_ms}ms)"
+                echo "   URL: $url"
+                [ -n "$header_info" ] && echo "   Header: $header_info"
+                echo ""
+              } >> "$FAIL_LOG"
               return 1
             fi
           }
@@ -136,7 +147,12 @@ jobs:
 
           # ── Notify on failure ──
           if [ $FAIL -gt 0 ]; then
-            ntfy_send "⚠️ Keep Alive: $FAIL FAILED" "high" "Worker $CURRENT_INDEX: $FAIL/${#PIDS[@]} services DOWN at $(date '+%H:%M %d/%m/%Y')"
+            FAIL_DETAILS=$(cat "$FAIL_LOG")
+            MSG="Worker $CURRENT_INDEX: $FAIL/${#PIDS[@]} FAILED at $(date '+%H:%M %d/%m/%Y')
+
+$FAIL_DETAILS"
+            ntfy_send "⚠️ Keep Alive: $FAIL FAILED" "high" "$MSG"
           fi
 
+          rm -f "$FAIL_LOG"
           [ $FAIL -gt 0 ] && exit 1
