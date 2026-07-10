@@ -46,21 +46,28 @@ jobs:
             url=$(echo "$line" | cut -d'|' -f1 | sed 's/[[:space:]]*$//')
             echo "🚀 Đang đánh thức: $url"
             
-            # Gom các header đi kèm sau dấu "|"
-            HEADER_PARAMS=""
+            # Gom các header đi kèm sau dấu "|" thành JSON
+            HEADER_JSON=""
             num_pipes=$(grep -o "|" <<< "$line" | wc -l)
             
             if [ "$num_pipes" -gt 0 ]; then
+              JSON_PAIRS=""
               for (( j=2; j<=num_pipes+1; j++ )); do
                 single_header=$(echo "$line" | cut -d'|' -f$j | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
                 if [ -n "$single_header" ]; then
-                  HEADER_PARAMS="$HEADER_PARAMS --header \"$single_header\""
+                  h_key=$(echo "$single_header" | cut -d':' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                  h_val=$(echo "$single_header" | cut -d':' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                  if [ -n "$JSON_PAIRS" ]; then JSON_PAIRS="$JSON_PAIRS,"; fi
+                  JSON_PAIRS="$JSON_PAIRS\"$h_key\":\"$h_val\""
                 fi
               done
+              if [ -n "$JSON_PAIRS" ]; then
+                HEADER_JSON="--headers '{${JSON_PAIRS}}'"
+              fi
             fi
             
             # 4. Gọi trình duyệt mở Web để kích hoạt Keep Alive
-            RESULT=$(eval "agent-browser open \"$url\" $HEADER_PARAMS --timeout 25000 2>&1") || true
+            RESULT=$(eval "agent-browser open \"$url\" $HEADER_JSON --timeout 25000 2>&1") || true
             
             # 5. Bộ lọc lỗi tối giản dành riêng cho Keep Alive (Chấp nhận cả mã lỗi 404)
             # Nếu kết quả chứa lỗi Code (như 404) -> Chấp nhận vì server có phản hồi.
