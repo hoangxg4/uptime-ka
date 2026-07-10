@@ -25,8 +25,8 @@ jobs:
           GH_TOKEN: "${{ secrets.GH_PAT }}"
           RAW_CONFIG_URL: "${{ secrets.RAW_CONFIG_URL }}"
         run: |
-          # 1. Tải danh sách cấu hình bảo mật
-          RAW_LIST=$(curl -s -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL")
+          # 1. Tải danh sách cấu hình bảo mật (Bỏ -s để hiện log curl)
+          RAW_LIST=$(curl -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL")
           
           if [ -z "$RAW_LIST" ] || [[ "$RAW_LIST" == *"Not Found"* || "$RAW_LIST" == *"Bad credentials"* ]]; then
             echo "❌ Không thể tải file cấu hình từ Secret!"
@@ -44,6 +44,7 @@ jobs:
             
             # Tách lấy URL
             url=$(echo "$line" | cut -d'|' -f1 | sed 's/[[:space:]]*$//')
+            echo "--------------------------------------------------------"
             echo "🚀 Đang đánh thức và render toàn bộ trang: $url"
             
             # Gom các header đi kèm sau dấu "|"
@@ -59,15 +60,19 @@ jobs:
               done
             fi
             
-            # 4. Gọi trình duyệt mở Web, tăng timeout lên 60000ms và kích hoạt render/screenshot full trang
-            # Lưu ý: Thay thế các cờ bằng cú pháp chính xác của thư viện bạn đang dùng (ví dụ: --full-page, --wait-until networkidle)
+            # 4. Gọi trình duyệt mở Web
             RESULT=$(eval "agent-browser open \"$url\" $HEADER_PARAMS --timeout 60000 --wait-until networkidle --screenshot 2>&1") || true
+            
+            # In FULL LOG của agent-browser ra GitHub Actions Console
+            echo "=== [AGENT-BROWSER LOGS] ==="
+            echo "$RESULT"
+            echo "============================="
             
             # 5. Bộ lọc lỗi
             if [[ "$RESULT" == *"ERR_HTTP_RESPONSE_CODE_FAILURE"* ]]; then
               echo "✅ $url Phản hồi mã lỗi chủ đích. Server vẫn hoạt động!"
             elif [[ "$RESULT" == *"ERR_"* || "$RESULT" == *"Timeout"* || "$RESULT" == *"status: 5"* ]]; then
-              echo "❌ $url Gặp sự cố kết nối! Chi tiết: $RESULT"
+              echo "❌ $url Gặp sự cố kết nối!"
               
               SHORT_ERR=$(echo "$RESULT" | head -n 2 | cut -c1-100)
               
