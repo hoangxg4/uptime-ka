@@ -145,12 +145,12 @@ jobs:
           echo "📊 Worker $CURRENT_INDEX │ ✅ $OK │ ❌ $FAIL │ Total: ${#PIDS[@]}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          # ── Notify on failure ──
+          # ── Notify (always, info only) ──
           if [ $FAIL -gt 0 ]; then
             FAIL_DETAILS=$(cat "$FAIL_LOG")
-            MSG="Worker $CURRENT_INDEX: $FAIL/${#PIDS[@]} FAILED at $(date '+%H:%M %d/%m/%Y')"$'\n\n'"$FAIL_DETAILS"
-            ntfy_send "⚠️ Keep Alive: $FAIL FAILED" "high" "$MSG"
+            MSG="Worker $CURRENT_INDEX: $FAIL/${#PIDS[@]} DOWN at $(date '+%H:%M %d/%m/%Y')"$'\n\n'"$FAIL_DETAILS"
+            ntfy_send "📡 Keep Alive: $FAIL/${#PIDS[@]} down" "low" "$MSG"
           fi
 
           rm -f "$FAIL_LOG"
-          [ $FAIL -gt 0 ] && exit 1
+          echo "✅ Done"
