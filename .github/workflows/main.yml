@@ -27,7 +27,7 @@ jobs:
           CURRENT_INDEX: ${{ matrix.index }}
           GH_TOKEN: ${{ secrets.GH_PAT }}
           RAW_CONFIG_URL: ${{ secrets.RAW_CONFIG_URL }}
-          DEBUG: "0"
+          DEBUG: "1"
         run: |
           set -uo pipefail
 
@@ -61,6 +61,12 @@ jobs:
 
             echo "::add-mask::$url"
 
+            # Debug: show raw line
+            if [ "${DEBUG:-0}" = "1" ]; then
+              echo "  🔍 Raw: $line"
+              echo "  🔍 Pipes: $num_pipes"
+            fi
+
             # Build curl args
             local curl_args=(-s --max-time 15 -L)
             local header_info=""
@@ -75,8 +81,9 @@ jobs:
             fi
 
             # Debug: show header
-            if [ "${DEBUG:-0}" = "1" ] && [ -n "$header_info" ]; then
-              echo "  🔍 Header: $header_info"
+            if [ "${DEBUG:-0}" = "1" ]; then
+              echo "  🔍 Header: [${header_info:-NONE}]"
+              echo "  🔍 Curl args: ${curl_args[*]}"
             fi
 
             # Execute
