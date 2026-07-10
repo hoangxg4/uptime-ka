@@ -15,8 +15,11 @@ jobs:
     steps:
       - name: Install agent-browser
         run: |
-          npm install -g agent-browser
-          agent-browser install --with-deps
+          npm install -g agent-browser --silent 2>/dev/null
+          timeout 60 agent-browser install --with-deps || {
+            echo "⚠️ Install with-deps timeout, retrying without..."
+            timeout 30 agent-browser install
+          }
 
       - name: Fast Wake Up
         env:
@@ -25,6 +28,11 @@ jobs:
           GH_TOKEN: "${{ secrets.GH_PAT }}"
           RAW_CONFIG_URL: "${{ secrets.RAW_CONFIG_URL }}"
         run: |
+          # Ẩn token và URL cấu hình khỏi log
+          echo "::add-mask::${GH_TOKEN}"
+          echo "::add-mask::${RAW_CONFIG_URL}"
+          echo "::add-mask::${DISCORD_WEBHOOK}"
+
           # 1. Tải danh sách cấu hình bảo mật
           RAW_LIST=$(curl -s -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL")
           
@@ -38,12 +46,15 @@ jobs:
           readarray -t ALL_URLS <<< "$CLEAN_LIST"
           TOTAL=${#ALL_URLS[@]}
           
+          echo "📋 Tổng số mục cần ping: $TOTAL (job index: $CURRENT_INDEX)"
+          
           # 3. Vòng lặp chia tải Matrix 5
           for (( i=$CURRENT_INDEX; i<$TOTAL; i+=5 )); do
             line="${ALL_URLS[$i]}"
             
-            # Tách lấy URL
+            # Tách lấy URL và ẩn khỏi log
             url=$(echo "$line" | cut -d'|' -f1 | sed 's/[[:space:]]*$//')
+            echo "::add-mask::${url}"
             echo "🚀 Đang đánh thức: $url"
             
             # Gom các header đi kèm sau dấu "|" thành JSON
@@ -66,23 +77,21 @@ jobs:
               fi
             fi
             
-            # 4. Gọi trình duyệt mở Web để kích hoạt Keep Alive
-            RESULT=$(eval "agent-browser open \"$url\" $HEADER_JSON --timeout 25000 2>&1") || true
+            # 4. Gọi trình duyệt mở Web (timeout 30s防止 kẹt)
+            RESULT=$(timeout 30 bash -c "eval \"agent-browser open \\\"$url\\\" $HEADER_JSON --timeout 25000 2>&1\"") || true
             
             # 5. Bộ lọc lỗi tối giản dành riêng cho Keep Alive (Chấp nhận cả mã lỗi 404)
-            # Nếu kết quả chứa lỗi Code (như 404) -> Chấp nhận vì server có phản hồi.
             if [[ "$RESULT" == *"ERR_HTTP_RESPONSE_CODE_FAILURE"* ]]; then
-              echo "✅ $url Phản hồi mã lỗi chủ đích (Ví dụ: 404 Not Found hoặc 401/403). Server vẫn SỐNG và đã được đánh thức!"
+              echo "✅ Phản hồi mã lỗi chủ đích (Ví dụ: 404/401/403). Server vẫn SỐNG!"
             elif [[ "$RESULT" == *"ERR_"* || "$RESULT" == *"Timeout"* || "$RESULT" == *"status: 5"* ]]; then
-              echo "❌ $url THỰC SỰ SẬP! Chi tiết: $RESULT"
+              echo "❌ THỰC SỰ SẬP! Chi tiết: $RESULT"
               
               SHORT_ERR=$(echo "$RESULT" | head -n 2 | cut -c1-100)
               
-              # Gửi cảnh báo về Discord
-              MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO: WEB SẬP HOÀN TOÀN\",\"color\":15158528,\"description\":\"**URL:** $url\n**Lỗi:** $SHORT_ERR\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
+              MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO: WEB SẬP HOÀN TOÀN\",\"color\":15158528,\"description\":\"**Lỗi:** $SHORT_ERR\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
               curl -s -H "Content-Type: application/json" -X POST -d "$MSG" "$DISCORD_WEBHOOK"
             else
-              echo "✅ $url Đã được đánh thức thành công (Hoặc đang Online)."
+              echo "✅ Đã được đánh thức thành công (Hoặc đang Online)."
             fi
             
             agent-browser close || true
