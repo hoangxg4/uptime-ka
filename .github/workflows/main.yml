@@ -13,19 +13,16 @@ jobs:
       max-parallel: 5
     
     steps:
-      # Bước 1: Setup Bun thần tốc
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
-        with:
-          bun-version: latest
-
-      # Bước 2: Dùng Bun cài đặt agent-browser siêu nhanh
-      - name: Install agent-browser
+      # Bước 1: Tải Obscura Binary trực tiếp từ GitHub Releases (~2 giây)
+      - name: Install Obscura Browser
         run: |
-          bun install -g agent-browser
-          # Giữ nguyên lệnh cài đặt các dependency của trình duyệt ngầm (Puppeteer/Playwright nếu có)
-          agent-browser install --with-deps
+          curl -LO https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-x86_64-linux.tar.gz
+          tar xzf obscura-x86_64-linux.tar.gz
+          chmod +x obscura
+          sudo mv obscura /usr/local/bin/
+          echo "✅ Đã cài đặt Obscura Browser thành công!"
 
+      # Bước 2: Chạy vòng lặp gọi Obscura thông qua CLI/HTTP mượt mà
       - name: Fast Wake Up
         env:
           DISCORD_WEBHOOK: "${{ secrets.DISCORD_WEBHOOK_URL }}"
@@ -33,8 +30,8 @@ jobs:
           GH_TOKEN: "${{ secrets.GH_PAT }}"
           RAW_CONFIG_URL: "${{ secrets.RAW_CONFIG_URL }}"
         run: |
-          # 1. Tải danh sách cấu hình bảo mật (Giữ curl bình thường hiển thị tiến trình log)
-          RAW_LIST=$(curl -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL")
+          # 1. Tải danh sách cấu hình bảo mật từ RAW URL
+          RAW_LIST=$(curl -s -H "Authorization: token $GH_TOKEN" "$RAW_CONFIG_URL")
           
           if [ -z "$RAW_LIST" ] || [[ "$RAW_LIST" == *"Not Found"* || "$RAW_LIST" == *"Bad credentials"* ]]; then
             echo "❌ Không thể tải file cấu hình từ Secret!"
@@ -53,43 +50,35 @@ jobs:
             # Tách lấy URL
             url=$(echo "$line" | cut -d'|' -f1 | sed 's/[[:space:]]*$//')
             echo "--------------------------------------------------------"
-            echo "🚀 Đang đánh thức và render toàn bộ trang: $url"
+            echo "🚀 Đang tiến hành gọi Obscura nạp trang: $url"
             
-            # SỬA LỖI HEADER: Dùng mảng Bash thay vì chuỗi thuần để tránh lỗi Nuốt Dấu của eval
-            HEADER_PARAMS=()
-            num_pipes=$(grep -o "|" <<< "$line" | wc -l)
-            
-            if [ "$num_pipes" -gt 0 ]; then
-              for (( j=2; j<=num_pipes+1; j++ )); do
-                single_header=$(echo "$line" | cut -d'|' -f$j | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                if [ -n "$single_header" ]; then
-                  # Thêm từng cặp tham số trực tiếp vào mảng
-                  HEADER_PARAMS+=("--header" "$single_header")
-                fi
-              done
+            # Tách lấy chuỗi Header chứa Token (nếu có)
+            token_val=""
+            if [[ "$line" == *"|"* ]]; then
+              token_val=$(echo "$line" | cut -d'|' -f2- | sed 's/Authorization://g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            fi
+
+            # 4. Kích hoạt Obscura cho từng URL đơn lẻ để tránh xung đột Session CDP
+            # Sử dụng cờ --header trực tiếp từ CLI của Obscura (nếu có token) giúp loại bỏ hoàn toàn script JS lằng nhằng
+            if [ -n "$token_val" ]; then
+              echo "[Obscura] Đang ghim Token Authorization kèm theo Request..."
+              RESULT=$(obscura --stealth --header "Authorization: $token_val" --timeout 15 screenshot --url "$url" /dev/null 2>&1) || true
+            else
+              RESULT=$(obscura --stealth --timeout 15 screenshot --url "$url" /dev/null 2>&1) || true
             fi
             
-            # 4. Gọi trình duyệt mở Web (Không dùng eval nữa để bảo toàn cấu trúc mảng Header)
-            RESULT=$(agent-browser open "$url" "${HEADER_PARAMS[@]}" --timeout 60000 --wait-until networkidle --screenshot 2>&1) || true
-            
-            # In FULL LOG của agent-browser ra GitHub Actions Console
-            echo "=== [AGENT-BROWSER LOGS] ==="
+            echo "=== [OBSCURA BROWSER LOGS] ==="
             echo "$RESULT"
             echo "============================="
             
-            # 5. Bộ lọc lỗi
-            if [[ "$RESULT" == *"ERR_HTTP_RESPONSE_CODE_FAILURE"* ]]; then
-              echo "✅ $url Phản hồi mã lỗi chủ đích. Server vẫn hoạt động!"
-            elif [[ "$RESULT" == *"ERR_"* || "$RESULT" == *"Timeout"* || "$RESULT" == *"status: 5"* ]]; then
-              echo "❌ $url Gặp sự cố kết nối!"
+            # 5. Kiểm tra lỗi dựa vào phản hồi log hệ thống của Obscura
+            if [[ "$RESULT" == *"error"* || "$RESULT" == *"failed"* || "$RESULT" == *"Unauthorized"* ]]; then
+              echo "❌ $url Gặp sự cố tải trang hoặc Token không hợp lệ!"
               
               SHORT_ERR=$(echo "$RESULT" | head -n 2 | cut -c1-100)
-              
-              MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO: WEB SẬP HOÀN TOÀN\",\"color\":15158528,\"description\":\"**URL:** $url\n**Lỗi:** $SHORT_ERR\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
+              MSG="{\"embeds\":[{\"title\":\"🚨 CẢNH BÁO: KEEPALIVE THẤT BẠI\",\"color\":15158528,\"description\":\"**URL:** $url\n**Lỗi:** $SHORT_ERR\",\"footer\":{\"text\":\"$(date '+%H:%M:%S %d/%m/%Y')\"}}]}"
               curl -s -H "Content-Type: application/json" -X POST -d "$MSG" "$DISCORD_WEBHOOK"
             else
-              echo "✅ $url Đã tải và xử lý giao diện thành công."
+              echo "✅ $url Đã kích hoạt ứng dụng thành công."
             fi
-            
-            agent-browser close || true
           done
